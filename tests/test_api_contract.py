@@ -83,7 +83,7 @@ def test_rejects_incomplete_hour_set() -> None:
 
     response = client.post("/optimize-energy", json=payload)
 
-    assert response.status_code == 422
+    assert response.status_code == 400
     assert response.json()["error"]["code"] == "request_validation_error"
 
 
@@ -103,7 +103,7 @@ def test_rejects_duplicate_hour() -> None:
 
     response = client.post("/optimize-energy", json=payload)
 
-    assert response.status_code == 422
+    assert response.status_code == 400
     assert response.json()["error"]["code"] == "request_validation_error"
 
 
@@ -113,7 +113,7 @@ def test_rejects_blank_scenario_id() -> None:
 
     response = client.post("/optimize-energy", json=payload)
 
-    assert response.status_code == 422
+    assert response.status_code == 400
 
 
 def test_rejects_non_finite_numeric_values() -> None:
@@ -126,7 +126,7 @@ def test_rejects_non_finite_numeric_values() -> None:
         headers={"content-type": "application/json"},
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 400
 
 
 def test_rejects_malformed_json_with_safe_error() -> None:
@@ -136,7 +136,20 @@ def test_rejects_malformed_json_with_safe_error() -> None:
         headers={"content-type": "application/json"},
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "request_validation_error"
+
+
+def test_structural_validation_precedes_provider_configuration(monkeypatch) -> None:
+    app.dependency_overrides.pop(get_interpreter, None)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    payload = _sample_payload()
+    payload["hours"] = payload["hours"][:-1]
+
+    response = client.post("/optimize-energy", json=payload)
+
+    assert response.status_code == 400
     assert response.json()["error"]["code"] == "request_validation_error"
 
 
@@ -168,3 +181,23 @@ def test_provider_failure_returns_controlled_error() -> None:
 
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "llm_provider_error"
+
+
+def test_guardrail_failure_returns_controlled_model_error() -> None:
+    class MalformedInterpreter:
+        def interpret_notes(self, _notes, _battery):
+            return [
+                DirectiveInterpretation(
+                    note_index=0,
+                    applies=True,
+                    directive_type="no_op",
+                    structured_adjustment=None,
+                    explanation="Invalid no-op semantics.",
+                )
+            ]
+
+    app.dependency_overrides[get_interpreter] = MalformedInterpreter
+    response = client.post("/optimize-energy", json=_sample_payload())
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "llm_invalid_output"

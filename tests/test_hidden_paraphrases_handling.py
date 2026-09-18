@@ -1,9 +1,10 @@
-"""Offline stress test for hidden-test paraphrases.
+"""Offline contract matrix for hidden-test-shaped directive outputs.
 
 Hidden tests paraphrase the same six directive types with varied wording
 (time expressions, percentages, equivalent phrasings). The LLM extraction
-step is exercised offline by synthesising the structured DirectiveInterpretation
-objects the prompt instructs the model to emit for each paraphrase.
+step cannot be exercised offline, so this module synthesises the canonical
+structured DirectiveInterpretation objects for each paraphrase and verifies the
+deterministic half of the pipeline. Live interpretation is covered separately.
 
 Each paraphrase is then fed through the full deterministic pipeline:
     apply_guardrails -> optimize_schedule -> replay_plan
@@ -81,17 +82,17 @@ def _di(
 
 TIME_WINDOW_CASES: list[tuple[str, str, list[int]]] = [
     # (paraphrase, directive_type, expected_hours)
-    ("from 1 PM to 3 PM", "no_charge_window", [13, 14, 15]),
-    ("6 PM until 9 PM", "no_charge_window", [18, 19, 20, 21]),
-    ("noon until 2 PM", "no_discharge_window", [12, 13, 14]),
-    ("2 AM until 5 AM", "no_discharge_window", [2, 3, 4, 5]),
-    ("between 11 AM and 2 PM", "max_grid_window", [11, 12, 13, 14]),
-    ("from 10 AM until noon", "minimum_battery_reserve", [10, 11, 12]),
-    ("11 AM and 2 PM", "no_charge_window", [11, 12, 13, 14]),
+    ("from 1 PM to 3 PM", "no_charge_window", [13, 14]),
+    ("6 PM until 9 PM", "no_charge_window", [18, 19, 20]),
+    ("noon until 2 PM", "no_discharge_window", [12, 13]),
+    ("2 AM until 5 AM", "no_discharge_window", [2, 3, 4]),
+    ("between 11 AM and 2 PM", "max_grid_window", [11, 12, 13]),
+    ("from 10 AM until noon", "minimum_battery_reserve", [10, 11]),
+    ("11 AM and 2 PM", "no_charge_window", [11, 12, 13]),
     ("midnight", "no_charge_window", [0]),
     ("1 AM", "no_discharge_window", [1]),
     ("11 PM", "max_grid_window", [23]),
-    ("after 6 PM until 9 PM", "max_grid_window", [18, 19, 20, 21]),
+    ("from 6 PM until 9 PM", "max_grid_window", [18, 19, 20]),
 ]
 
 
@@ -102,8 +103,8 @@ PERCENTAGE_CASES: list[tuple[str, float]] = [
     ("half of the forecast", 0.50),
     ("completely blocked", 0.00),
     ("no reduction", 1.00),
-    ("loss of three quarters", 0.0),
-    ("usable solar falls to 1/4", 0.0),
+    ("loss of three quarters", 0.25),
+    ("usable solar falls to 1/4", 0.25),
     ("panels offline", 0.0),
 ]
 
@@ -137,7 +138,7 @@ RESERVE_VALUE_CASES: list[tuple[str, dict]] = [
     # (paraphrase, structured_adjustment the LLM should emit)
     ("50% of capacity", {"hours": [10, 11, 12], "minimum_energy_kwh": 10.0}),
     ("keep 8 kWh in reserve", {"hours": [10, 11, 12], "minimum_energy_kwh": 8.0}),
-    ("hold at 5 kWh from 6 PM to 8 PM", {"hours": [18, 19, 20], "minimum_energy_kwh": 5.0}),
+    ("hold at 5 kWh from 6 PM to 8 PM", {"hours": [18, 19], "minimum_energy_kwh": 5.0}),
 ]
 
 
@@ -357,13 +358,13 @@ def test_system_prompt_documents_paraphrase_examples() -> None:
 
     required = [
         # Time-window mapping examples
-        "'from 1 PM to 3 PM' -> [13, 14, 15]",
-        "'6 PM until 9 PM' -> [18, 19, 20, 21]",
-        "'noon until 2 PM' -> [12, 13, 14]",
-        "'2 AM until 5 AM' -> [2, 3, 4, 5]",
-        "'between 11 AM and 2 PM' -> [11, 12, 13, 14]",
-        "'from 10 AM until noon' -> [10, 11, 12]",
-        "'11 AM and 2 PM' -> [11, 12, 13, 14]",
+        "'from 1 PM to 3 PM' -> [13, 14]",
+        "'6 PM until 9 PM' -> [18, 19, 20]",
+        "'noon until 2 PM' -> [12, 13]",
+        "'2 AM until 5 AM' -> [2, 3, 4]",
+        "'between 11 AM and 2 PM' -> [11, 12, 13]",
+        "'from 10 AM until noon' -> [10, 11]",
+        "'11 AM and 2 PM' -> [11, 12, 13]",
         "'midnight' -> [0]",
         "'11 PM' -> [23]",
         # Percentage/equivalence examples
@@ -390,11 +391,9 @@ def test_system_prompt_documents_paraphrase_examples() -> None:
         assert phrase in SYSTEM_PROMPT, f"missing prompt example: {phrase}"
 
 
-def test_system_prompt_documents_end_inclusive_window_convention() -> None:
+def test_system_prompt_documents_end_exclusive_window_convention() -> None:
     from app.llm_interpreter import SYSTEM_PROMPT
 
-    # The hidden-tests rubric rewards interpretations that match the
-    # longest plausible window. The prompt must call out end-INCLUSIVE
-    # semantics so the model emits the last hour rather than dropping it.
-    assert "end-INCLUSIVE" in SYSTEM_PROMPT
-    assert "last hour included" in SYSTEM_PROMPT
+    assert "start-inclusive and end-exclusive" in SYSTEM_PROMPT
+    assert "end boundary is not an affected hour" in SYSTEM_PROMPT
+    assert "end-INCLUSIVE" not in SYSTEM_PROMPT

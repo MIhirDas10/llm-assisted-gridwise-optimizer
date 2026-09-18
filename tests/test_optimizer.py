@@ -1,5 +1,7 @@
 """Unit tests for app.optimizer and app.replay."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.optimizer import OptimizationError, optimize_schedule
@@ -160,6 +162,49 @@ def test_optimizer_solar_reduction_lowers_solar_use() -> None:
     base_solar = sum(p.solar_used_kwh for p in baseline.plan)
     cap_solar = sum(p.solar_used_kwh for p in capped.plan)
     assert cap_solar < base_solar
+
+
+def test_overlapping_solar_reductions_use_most_restrictive_factor() -> None:
+    hours = _hours(demand=10.0, solar=8.0)
+    directives = [
+        DirectiveInterpretation(
+            note_index=0,
+            applies=True,
+            directive_type="solar_reduction",
+            structured_adjustment={"hours": [12], "factor": 0.5},
+            explanation="half remains",
+        ),
+        DirectiveInterpretation(
+            note_index=1,
+            applies=True,
+            directive_type="solar_reduction",
+            structured_adjustment={"hours": [12], "factor": 0.25},
+            explanation="quarter remains",
+        ),
+    ]
+
+    result = optimize_schedule(hours, _battery(), directives)
+    assert result.plan[12].solar_used_kwh <= 2.0 + 1e-6
+    replay_plan(hours, _battery(), directives, result.plan)
+
+
+def test_simultaneous_solver_flows_are_serialized_as_net_action(monkeypatch) -> None:
+    x = [0.0] * 96
+    for hour in range(24):
+        x[hour] = 5.0
+    x[24] = 2.0
+    x[48] = 2.0
+
+    monkeypatch.setattr(
+        "app.optimizer.linprog",
+        lambda **_kwargs: SimpleNamespace(success=True, x=x),
+    )
+
+    hours = _hours()
+    result = optimize_schedule(hours, _battery(), _no_ops())
+    assert result.plan[0].battery_action == "idle"
+    assert result.plan[0].battery_kwh == 0.0
+    replay_plan(hours, _battery(), _no_ops(), result.plan)
 
 
 def test_optimizer_max_grid_window_caps_grid() -> None:

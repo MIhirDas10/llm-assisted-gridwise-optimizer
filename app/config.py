@@ -33,7 +33,7 @@ class LLMSettings:
             )
 
         try:
-            timeout_seconds = float(os.getenv("LLM_TIMEOUT_SECONDS", "20"))
+            timeout_seconds = float(os.getenv("LLM_TIMEOUT_SECONDS", "8"))
             max_retries = int(os.getenv("LLM_MAX_RETRIES", "1"))
         except ValueError as exc:
             raise LLMConfigurationError(

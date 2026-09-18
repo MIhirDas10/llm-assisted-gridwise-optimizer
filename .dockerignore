@@ -21,6 +21,7 @@ env
 
 # tests + dev tooling
 tests
+scripts
 conftest.py
 requirements-dev.txt
 extract_pdf.py
@@ -31,9 +32,8 @@ summarize_samples.py
 # problem documents and PDFs (large, not runtime artefacts)
 *.pdf
 *.txt
+!requirements.txt
 *.md
-!README.md
 smoke_pipeline.py
 BUP_CSE_FEST_2026_*.json
 *.json
-!README.md

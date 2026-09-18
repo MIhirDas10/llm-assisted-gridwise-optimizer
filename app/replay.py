@@ -46,7 +46,7 @@ def _effective_solar_map(
         adj = entry.structured_adjustment or {}
         factor = float(adj.get("factor", 1.0))
         for hour in adj.get("hours", []):
-            factors[hour] = factor
+            factors[hour] = min(factors.get(hour, 1.0), factor)
     return {
         h.hour: round(float(h.solar_kwh) * factors.get(h.hour, 1.0), 9)
         for h in hours

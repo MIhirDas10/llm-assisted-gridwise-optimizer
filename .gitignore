@@ -1,8 +1,15 @@
 .venv/
 __pycache__/
 .pytest_cache/
+.puku/
 *.py[cod]
 .env
+
+# Generated PDF text extractions; the source PDFs are canonical.
+problem.txt
+problem2.txt
+rubric.txt
+rubric2.txt
 
 notebooklm.txt
 modules.txt

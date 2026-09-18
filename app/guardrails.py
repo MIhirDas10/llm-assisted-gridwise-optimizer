@@ -18,14 +18,13 @@ Validation rules:
 - For max_grid_window: max_grid_kwh must be finite and non-negative.
 - The LLM must not invent a directive type that is not in the supported set.
 
-When a rule fails, the corresponding note is demoted to a safe no_op and a
-warning is logged. The optimizer still receives a fully validated
-DirectiveInterpretation list and never sees an untrusted value.
+When any rule fails, validation stops. The API reports a controlled model-output
+failure instead of silently changing a relevant directive into no_op.
 """
 
 from __future__ import annotations
 
-import logging
+from math import isfinite
 from typing import Any
 
 from app.schemas import (
@@ -34,9 +33,6 @@ from app.schemas import (
     DirectiveType,
     HourEntry,
 )
-
-logger = logging.getLogger(__name__)
-
 
 SUPPORTED_DIRECTIVE_TYPES: frozenset[DirectiveType] = frozenset(
     {
@@ -51,13 +47,7 @@ SUPPORTED_DIRECTIVE_TYPES: frozenset[DirectiveType] = frozenset(
 
 
 class GuardrailViolation(Exception):
-    """Raised when guardrail validation cannot produce a safe interpretation.
-
-    Only used for failures that cannot be remediated by demoting a single note
-    to no_op (for example: the note count or the note_index ordering is wrong
-    such that the input is structurally unusable). Recoverable per-note
-    failures are silently downgraded to no_op with a warning log.
-    """
+    """Raised when model output cannot be safely sent to the optimizer."""
 
 
 def _is_hour_list(value: Any) -> bool:
@@ -74,22 +64,11 @@ def _is_hour_list(value: Any) -> bool:
     return True
 
 
-def _safe_no_op(
-    note_index: int, reason: str, battery: Battery | None = None
-) -> DirectiveInterpretation:
-    logger.warning(
-        "Directive for note_index=%s demoted to no_op: %s", note_index, reason
-    )
-    return DirectiveInterpretation(
-        note_index=note_index,
-        applies=False,
-        directive_type="no_op",
-        structured_adjustment=None,
-        explanation=(
-            "The interpreter output did not pass deterministic guardrails; "
-            "this note was treated as no_op."
-        ),
-    )
+def _require_exact_keys(adjustment: dict[str, Any], expected: set[str]) -> None:
+    if set(adjustment) != expected:
+        raise _ShapeError(
+            "structured_adjustment must contain exactly: " + ", ".join(sorted(expected))
+        )
 
 
 def _validate_no_op(
@@ -118,12 +97,13 @@ def _validate_solar_reduction(
     adj = item.structured_adjustment
     if not isinstance(adj, dict):
         raise _ShapeError("solar_reduction requires structured_adjustment object")
+    _require_exact_keys(adj, {"hours", "factor"})
     if not _is_hour_list(adj.get("hours")):
         raise _ShapeError("solar_reduction.hours must be unique ascending ints 0..23")
     factor = adj.get("factor")
     if not isinstance(factor, (int, float)) or isinstance(factor, bool):
         raise _ShapeError("solar_reduction.factor must be a number")
-    if not (0.0 <= float(factor) <= 1.0):
+    if not isfinite(float(factor)) or not (0.0 <= float(factor) <= 1.0):
         raise _ShapeError("solar_reduction.factor must be within [0, 1]")
     clean_adj = {"hours": list(adj["hours"]), "factor": float(factor)}
     return DirectiveInterpretation(
@@ -141,6 +121,7 @@ def _validate_window(
     adj = item.structured_adjustment
     if not isinstance(adj, dict):
         raise _ShapeError("window directive requires structured_adjustment object")
+    _require_exact_keys(adj, {"hours"})
     if not _is_hour_list(adj.get("hours")):
         raise _ShapeError("window directive hours must be unique ascending ints 0..23")
     clean_adj = {"hours": list(adj["hours"])}
@@ -159,6 +140,7 @@ def _validate_min_battery_reserve(
     adj = item.structured_adjustment
     if not isinstance(adj, dict):
         raise _ShapeError("minimum_battery_reserve requires structured_adjustment")
+    _require_exact_keys(adj, {"hours", "minimum_energy_kwh"})
     if not _is_hour_list(adj.get("hours")):
         raise _ShapeError(
             "minimum_battery_reserve.hours must be unique ascending ints 0..23"
@@ -167,6 +149,8 @@ def _validate_min_battery_reserve(
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise _ShapeError("minimum_energy_kwh must be a number")
     value_f = float(value)
+    if not isfinite(value_f):
+        raise _ShapeError("minimum_energy_kwh must be finite")
     if value_f < 0:
         raise _ShapeError("minimum_energy_kwh must not be negative")
     if value_f > battery.capacity_kwh:
@@ -192,6 +176,7 @@ def _validate_max_grid_window(
     adj = item.structured_adjustment
     if not isinstance(adj, dict):
         raise _ShapeError("max_grid_window requires structured_adjustment")
+    _require_exact_keys(adj, {"hours", "max_grid_kwh"})
     if not _is_hour_list(adj.get("hours")):
         raise _ShapeError(
             "max_grid_window.hours must be unique ascending ints 0..23"
@@ -200,6 +185,8 @@ def _validate_max_grid_window(
     if not isinstance(cap, (int, float)) or isinstance(cap, bool):
         raise _ShapeError("max_grid_kwh must be a number")
     cap_f = float(cap)
+    if not isfinite(cap_f):
+        raise _ShapeError("max_grid_kwh must be finite")
     if cap_f < 0:
         raise _ShapeError("max_grid_kwh must not be negative")
     clean_adj = {"hours": list(adj["hours"]), "max_grid_kwh": cap_f}
@@ -259,11 +246,7 @@ def apply_guardrails(
     battery: Battery,
     hours: list[HourEntry] | None = None,
 ) -> list[DirectiveInterpretation]:
-    """Re-validate every interpretation. Demote malformed entries to no_op.
-
-    Inputs that cannot be remediated (wrong count, wrong note_index sequence)
-    raise GuardrailViolation so the caller can fail the request safely.
-    """
+    """Re-validate every interpretation and fail closed on malformed output."""
     expected_indexes = list(range(len(interpretations)))
     actual_indexes = [item.note_index for item in interpretations]
     if actual_indexes != expected_indexes:
@@ -277,5 +260,7 @@ def apply_guardrails(
         try:
             cleaned.append(_validate_single(item, index, battery))
         except _ShapeError as exc:
-            cleaned.append(_safe_no_op(index, str(exc), battery=battery))
+            raise GuardrailViolation(
+                f"directive for note_index={index} failed validation: {exc}"
+            ) from exc
     return cleaned

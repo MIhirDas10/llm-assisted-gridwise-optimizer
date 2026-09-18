@@ -19,15 +19,13 @@ Constraints:
     6. End-of-day neutrality  E_after[23] == initial_energy_kwh
 
 Effective solar: solar_kwh[h] * factor for hours covered by solar_reduction.
-The optimizer is greedy on solar (uses it before grid whenever possible) which
-is optimal whenever surplus solar can be curtailed cheaply — that is the case
-in this dataset.
+Solar use is an LP variable bounded by effective availability; curtailment is
+allowed by the challenge contract.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from scipy.optimize import linprog
 
@@ -37,9 +35,6 @@ from app.schemas import (
     HourEntry,
     HourlyPlanEntry,
 )
-
-
-INFEASIBLE_INF: float = 1.0e9
 
 
 class OptimizationError(Exception):
@@ -54,12 +49,6 @@ class OptimizationResult:
     peak_grid_kwh: float
 
 
-def _hour_set(value: Optional[list[int]]) -> set[int]:
-    if not value:
-        return set()
-    return {int(h) for h in value if 0 <= int(h) <= 23}
-
-
 def _effective_solar(
     hours: list[HourEntry], interpretations: list[DirectiveInterpretation]
 ) -> list[float]:
@@ -70,7 +59,8 @@ def _effective_solar(
         adj = entry.structured_adjustment or {}
         factor = float(adj.get("factor", 1.0))
         for hour in adj.get("hours", []):
-            factors[int(hour)] = factor
+            h = int(hour)
+            factors[h] = min(factors.get(h, 1.0), factor)
     return [
         round(float(h.solar_kwh) * factors.get(h.hour, 1.0), 9)
         for h in hours
@@ -167,9 +157,9 @@ def optimize_schedule(
     for h in range(24):
         c_obj[h] = tariffs[h]
 
-    bounds: list[tuple[float, float]] = []
+    bounds: list[tuple[float, float | None]] = []
     for h in range(24):
-        ub = max_grid_caps.get(h, INFEASIBLE_INF)
+        ub = max_grid_caps.get(h)
         bounds.append((0.0, ub))  # grid
     for h in range(24):
         ub = 0.0 if h in no_charge_hours else max_c
@@ -254,8 +244,9 @@ def optimize_schedule(
     peak_grid = 0.0
 
     for h in range(24):
-        c_h = round(charge_vals[h], 6)
-        d_h = round(discharge_vals[h], 6)
+        net_battery = round(charge_vals[h] - discharge_vals[h], 6)
+        c_h = max(0.0, net_battery)
+        d_h = max(0.0, -net_battery)
         s_h = round(solar_vals[h], 6)
         g_h = round(_grid_from_balance(demand[h], s_h, c_h, d_h), 6)
         if g_h < 0:

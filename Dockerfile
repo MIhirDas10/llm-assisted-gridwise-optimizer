@@ -43,9 +43,7 @@ USER gridwise
 
 EXPOSE 8000
 
-# Sanity check at container start: wait for /health to become 200 before
-# declaring the service ready.  `--workers 2` lets uvicorn handle bursts while
-# keeping the LP solve wall-clock low.
+# Report container readiness through the provider-independent /health endpoint.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${PORT}/health" || exit 1
 

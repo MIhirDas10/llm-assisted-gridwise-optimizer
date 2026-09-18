@@ -83,7 +83,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             for error in exc.errors()
         ]
         return JSONResponse(
-            status_code=422,
+            status_code=400,
             content=_error_body(
                 "request_validation_error",
                 "The request body is invalid.",

@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from app.guardrails import apply_guardrails
+from app.optimizer import optimize_schedule
 from app.replay import replay_plan
 from app.schemas import (
     Battery,
@@ -121,6 +122,19 @@ def test_replay_totals_agree_with_sample(case: dict) -> None:
     assert abs(totals.peak_grid_kwh - expected_peak) <= TOLERANCE_KWH, (
         f"{case['id']}: peak_grid_kwh {totals.peak_grid_kwh} "
         f"!= sample {expected_peak}"
+    )
+
+
+@pytest.mark.parametrize("case", CASES, ids=CASE_IDS)
+def test_optimizer_matches_public_sample_optimal_cost(case: dict) -> None:
+    interpretations = apply_guardrails(_interpretations(case), _battery(case))
+    result = optimize_schedule(_hours(case), _battery(case), interpretations)
+    totals = replay_plan(_hours(case), _battery(case), interpretations, result.plan)
+
+    expected_cost = float(case["expected_output"]["total_cost_bdt"])
+    assert abs(totals.total_cost_bdt - expected_cost) <= TOLERANCE_BDT, (
+        f"{case['id']}: optimized cost {totals.total_cost_bdt} "
+        f"!= organizer optimum {expected_cost}"
     )
 
 

@@ -1,5 +1,9 @@
 """Unit tests for app.guardrails."""
 
+from math import nan
+
+import pytest
+
 from app.guardrails import (
     GuardrailViolation,
     SUPPORTED_DIRECTIVE_TYPES,
@@ -46,13 +50,13 @@ def _di(
 
 
 def test_no_op_applies_passes_through() -> None:
-    interp = [_di(0, "no_op", None)]
+    interp = [_di(0, "no_op", None, applies=False)]
     out = apply_guardrails(interp, _battery())
     assert len(out) == 1
     assert out[0].directive_type == "no_op"
 
 
-def test_unknown_directive_demoted_to_no_op() -> None:
+def test_malformed_no_op_fails_closed() -> None:
     interp = [_di(0, "no_op", {"garbage": 1})]  # uses no_op but injects bad adjustment
     # Force the bad shape via the wider schema; cast to a non-allowed value
     interp = [
@@ -64,15 +68,14 @@ def test_unknown_directive_demoted_to_no_op() -> None:
             explanation="weird",
         )
     ]
-    out = apply_guardrails(interp, _battery())
-    # duplicate hours is invalid, must be demoted
-    assert out[0].directive_type == "no_op"
+    with pytest.raises(GuardrailViolation):
+        apply_guardrails(interp, _battery())
 
 
-def test_solar_reduction_with_negative_factor_demoted() -> None:
+def test_solar_reduction_with_negative_factor_fails_closed() -> None:
     interp = [_di(0, "solar_reduction", {"hours": [10], "factor": -0.5})]
-    out = apply_guardrails(interp, _battery())
-    assert out[0].directive_type == "no_op"
+    with pytest.raises(GuardrailViolation):
+        apply_guardrails(interp, _battery())
 
 
 def test_solar_reduction_valid_passes() -> None:
@@ -83,26 +86,47 @@ def test_solar_reduction_valid_passes() -> None:
 
 def test_max_grid_window_requires_cap_field() -> None:
     interp = [_di(0, "max_grid_window", {"hours": [18, 19, 20]})]
-    out = apply_guardrails(interp, _battery())
-    assert out[0].directive_type == "no_op"
+    with pytest.raises(GuardrailViolation):
+        apply_guardrails(interp, _battery())
 
 
 def test_min_reserve_requires_floor_field() -> None:
     interp = [_di(0, "minimum_battery_reserve", {"hours": [22, 23]})]
-    out = apply_guardrails(interp, _battery())
-    assert out[0].directive_type == "no_op"
+    with pytest.raises(GuardrailViolation):
+        apply_guardrails(interp, _battery())
 
 
 def test_window_hours_must_be_in_range() -> None:
     interp = [_di(0, "no_charge_window", {"hours": [24]})]
-    out = apply_guardrails(interp, _battery())
-    assert out[0].directive_type == "no_op"
+    with pytest.raises(GuardrailViolation):
+        apply_guardrails(interp, _battery())
+
+
+def test_non_finite_values_fail_closed() -> None:
+    reserve = [
+        _di(
+            0,
+            "minimum_battery_reserve",
+            {"hours": [1], "minimum_energy_kwh": nan},
+        )
+    ]
+    grid_cap = [_di(0, "max_grid_window", {"hours": [1], "max_grid_kwh": nan})]
+
+    with pytest.raises(GuardrailViolation):
+        apply_guardrails(reserve, _battery())
+    with pytest.raises(GuardrailViolation):
+        apply_guardrails(grid_cap, _battery())
+
+
+def test_adjustment_rejects_extra_fields() -> None:
+    interp = [_di(0, "no_charge_window", {"hours": [2, 3], "factor": 0.5})]
+
+    with pytest.raises(GuardrailViolation):
+        apply_guardrails(interp, _battery())
 
 
 def test_guardrail_violation_on_wrong_note_index() -> None:
     interp = [_di(99, "solar_reduction", {"hours": [10], "factor": 0.5})]
     # Wrong note_index for first entry should raise
-    import pytest
-
     with pytest.raises(GuardrailViolation):
         apply_guardrails(interp, _battery())

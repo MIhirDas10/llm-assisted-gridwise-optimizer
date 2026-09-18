@@ -1,7 +1,7 @@
 """Service layer: glue the interpreter, guardrails, optimizer, and replay."""
 
-from app.errors import OptimizationError_, ReplayViolationError
-from app.guardrails import apply_guardrails
+from app.errors import LLMInvalidOutputError, OptimizationError_, ReplayViolationError
+from app.guardrails import GuardrailViolation, apply_guardrails
 from app.llm_interpreter import NoteInterpreter
 from app.optimizer import optimize_schedule
 from app.replay import replay_plan
@@ -19,9 +19,12 @@ def build_contract_response(
     raw_interpretations = interpreter.interpret_notes(
         payload.operator_notes, payload.battery
     )
-    interpretations = apply_guardrails(
-        raw_interpretations, payload.battery, hours=payload.hours
-    )
+    try:
+        interpretations = apply_guardrails(
+            raw_interpretations, payload.battery, hours=payload.hours
+        )
+    except GuardrailViolation as exc:
+        raise LLMInvalidOutputError() from exc
 
     try:
         optimization = optimize_schedule(
