@@ -2,7 +2,7 @@
 
 HTTP API for the BUP CSE Fest 2026 GridWise preliminary challenge. The service receives a 24-hour campus energy scenario, interprets 1-3 operator notes, applies deterministic guardrails, optimizes a battery/grid/solar schedule, and returns a machine-checkable JSON response.
 
-This repository is currently at **Module 1: API + Input/Output Contract**. It exposes the exact endpoints and validates the request shape. The returned optimization plan is a safe idle-battery placeholder until the LLM interpreter, guardrails, and optimizer modules are implemented.
+This repository is currently at **Module 1: API + Input/Output Contract**. It exposes the exact endpoints, strictly validates the request shape, normalizes valid hourly input into hour order, and returns controlled JSON errors. The returned optimization plan is a safe idle-battery placeholder until the LLM interpreter, guardrails, and optimizer modules are implemented.
 
 ## Architecture
 
@@ -48,6 +48,20 @@ Successful responses include:
 - `peak_grid_kwh`
 - `plan_summary`
 
+Invalid requests return HTTP `422` with a stable error envelope:
+
+```json
+{
+  "error": {
+    "code": "request_validation_error",
+    "message": "The request body is invalid.",
+    "details": []
+  }
+}
+```
+
+Unexpected downstream failures return a generic HTTP `500` response without exposing prompts, credentials, or stack traces to the caller.
+
 ## Local Setup
 
 ```bash
@@ -82,7 +96,7 @@ curl -X POST http://localhost:8000/optimize-energy ^
 pytest
 ```
 
-The current tests cover the module-1 contract: health response, optimization response shape, and request validation.
+The current tests cover the Module 1 contract: health response, optimization response shape, malformed JSON, missing/duplicate hours, non-finite numbers, input normalization, and controlled downstream failures.
 
 ## Environment Variables
 
@@ -130,4 +144,3 @@ It must enforce:
 - Module 1 currently marks every operator note as `no_op`; this is intentionally a placeholder and does not satisfy the final mandatory LLM interpretation requirement.
 - The current hourly plan uses available solar first and keeps the battery idle. It is valid as a contract baseline but is not cost-optimized and does not apply operator directives.
 - Docker packaging is not added yet.
-
