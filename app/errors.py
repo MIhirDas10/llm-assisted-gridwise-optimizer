@@ -20,6 +20,38 @@ class ApplicationError(Exception):
         self.status_code = status_code
 
 
+class LLMConfigurationError(ApplicationError):
+    def __init__(self, message: str) -> None:
+        super().__init__("llm_configuration_error", message, status_code=503)
+
+
+class LLMTimeoutError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            "llm_timeout",
+            "The operator notes could not be interpreted before the provider timeout.",
+            status_code=504,
+        )
+
+
+class LLMProviderError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            "llm_provider_error",
+            "The operator-note interpretation provider is temporarily unavailable.",
+            status_code=502,
+        )
+
+
+class LLMInvalidOutputError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            "llm_invalid_output",
+            "The operator-note interpretation provider returned an invalid response.",
+            status_code=502,
+        )
+
+
 def _error_body(code: str, message: str, details: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     body: dict[str, Any] = {"error": {"code": code, "message": message}}
     if details:

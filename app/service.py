@@ -1,23 +1,18 @@
 from app.schemas import (
-    DirectiveInterpretation,
     HourlyPlanEntry,
     OptimizeEnergyRequest,
     OptimizeEnergyResponse,
 )
+from app.llm_interpreter import NoteInterpreter
 
 
-def build_contract_response(payload: OptimizeEnergyRequest) -> OptimizeEnergyResponse:
-    """Return a valid response shape for module 1 before LLM/optimizer modules land."""
-    directive_interpretation = [
-        DirectiveInterpretation(
-            note_index=index,
-            applies=False,
-            directive_type="no_op",
-            structured_adjustment=None,
-            explanation="Module 1 placeholder: operator-note interpretation is implemented in module 2.",
-        )
-        for index, _note in enumerate(payload.operator_notes)
-    ]
+def build_contract_response(
+    payload: OptimizeEnergyRequest, interpreter: NoteInterpreter
+) -> OptimizeEnergyResponse:
+    """Interpret notes and return the temporary baseline plan used before Module 4."""
+    directive_interpretation = interpreter.interpret_notes(
+        payload.operator_notes, payload.battery
+    )
 
     hourly_plan: list[HourlyPlanEntry] = []
     for hour in payload.hours:
@@ -49,8 +44,7 @@ def build_contract_response(payload: OptimizeEnergyRequest) -> OptimizeEnergyRes
         total_cost_bdt=total_cost_bdt,
         peak_grid_kwh=peak_grid_kwh,
         plan_summary=(
-            "Module 1 contract response: serves the required API shape with an idle-battery "
-            "baseline plan. LLM interpretation, guardrails, and cost optimization are added in later modules."
+            "Module 2 response: operator notes were interpreted by the configured language model. "
+            "The hourly schedule remains an idle-battery baseline until guardrails and optimization are added."
         ),
     )
-

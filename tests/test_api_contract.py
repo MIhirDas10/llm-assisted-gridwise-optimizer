@@ -1,11 +1,37 @@
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.errors import LLMProviderError
+from app.main import app, get_interpreter
+from app.schemas import Battery, DirectiveInterpretation
 
 
 client = TestClient(app)
+
+
+class StubInterpreter:
+    def interpret_notes(
+        self, notes: list[str], _battery: Battery
+    ) -> list[DirectiveInterpretation]:
+        return [
+            DirectiveInterpretation(
+                note_index=index,
+                applies=False,
+                directive_type="no_op",
+                structured_adjustment=None,
+                explanation="The note does not affect the energy schedule.",
+            )
+            for index, _note in enumerate(notes)
+        ]
+
+
+@pytest.fixture(autouse=True)
+def override_interpreter_dependency():
+    app.dependency_overrides[get_interpreter] = StubInterpreter
+    yield
+    app.dependency_overrides.pop(get_interpreter, None)
 
 
 def _sample_payload() -> dict:
@@ -115,7 +141,7 @@ def test_rejects_malformed_json_with_safe_error() -> None:
 
 
 def test_unexpected_failure_returns_controlled_error(monkeypatch) -> None:
-    def fail(_payload):
+    def fail(_payload, _interpreter):
         raise RuntimeError("provider secret must not be exposed")
 
     monkeypatch.setattr("app.main.build_contract_response", fail)
@@ -130,3 +156,15 @@ def test_unexpected_failure_returns_controlled_error(monkeypatch) -> None:
         }
     }
     assert "provider secret" not in response.text
+
+
+def test_provider_failure_returns_controlled_error() -> None:
+    class FailingInterpreter:
+        def interpret_notes(self, _notes, _battery):
+            raise LLMProviderError()
+
+    app.dependency_overrides[get_interpreter] = FailingInterpreter
+    response = client.post("/optimize-energy", json=_sample_payload())
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "llm_provider_error"
