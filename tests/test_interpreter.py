@@ -162,8 +162,13 @@ def test_sends_schema_constrained_prompt_with_battery_context() -> None:
     assert request["temperature"] == 0
     assert request["store"] is False
     assert '"capacity_kwh":200.0' in request["input"][1]["content"]
-    assert "start-inclusive and end-exclusive" in request["input"][0]["content"]
-    assert "80% reduction means 0.20" in request["input"][0]["content"]
+    # Window convention must be documented (end-inclusive on the last hour).
+    assert "start-inclusive and end-INCLUSIVE" in request["input"][0]["content"]
+    # Percentage-to-factor mapping must be explicit so paraphrases map correctly.
+    assert "'80% reduction' -> 0.20" in request["input"][0]["content"]
+    # Paraphrase robustness markers should be present.
+    assert "Recognize paraphrases by meaning" in request["input"][0]["content"]
+    assert "usable solar falls to 1/4" in request["input"][0]["content"]
 
 
 def test_rejects_missing_or_malformed_parsed_output() -> None:
