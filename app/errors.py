@@ -52,6 +52,16 @@ class LLMInvalidOutputError(ApplicationError):
         )
 
 
+class OptimizationError_(ApplicationError):
+    def __init__(self, message: str) -> None:
+        super().__init__("optimization_error", message, status_code=422)
+
+
+class ReplayViolationError(ApplicationError):
+    def __init__(self, message: str) -> None:
+        super().__init__("replay_violation", message, status_code=422)
+
+
 def _error_body(code: str, message: str, details: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     body: dict[str, Any] = {"error": {"code": code, "message": message}}
     if details:

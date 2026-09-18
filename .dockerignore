@@ -1,0 +1,39 @@
+# git + python + IDE caches
+.git
+.gitignore
+.gitattributes
+.puku
+.pytest_cache
+.mypy_cache
+.ruff_cache
+__pycache__
+**/__pycache__
+*.py[cod]
+*.egg-info
+.venv
+venv
+env
+
+# environment files (must NEVER be baked in)
+.env
+.env.*
+!.env.example
+
+# tests + dev tooling
+tests
+conftest.py
+requirements-dev.txt
+extract_pdf.py
+extract_all.py
+reconstruct.py
+summarize_samples.py
+
+# problem documents and PDFs (large, not runtime artefacts)
+*.pdf
+*.txt
+*.md
+!README.md
+smoke_pipeline.py
+BUP_CSE_FEST_2026_*.json
+*.json
+!README.md

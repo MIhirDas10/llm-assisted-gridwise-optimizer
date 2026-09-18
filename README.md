@@ -1,23 +1,21 @@
 # GridWise LLM Energy Optimizer
 
-HTTP API for the BUP CSE Fest 2026 GridWise preliminary challenge. The service receives a 24-hour campus energy scenario, interprets 1-3 operator notes, applies deterministic guardrails, optimizes a battery/grid/solar schedule, and returns a machine-checkable JSON response.
+HTTP API for the BUP CSE Fest 2026 GridWise preliminary challenge. The service receives a 24-hour campus energy scenario, interprets 1-3 operator notes, applies deterministic guardrails, optimizes a battery/grid/solar schedule with a linear program, and replays every invariant from Section 09 before returning a machine-checkable JSON response.
 
-This repository currently includes **Module 1: API Contract** and **Module 2: LLM Operator-Note Interpreter**. The API validates the request, sends every operator note through an OpenAI model using schema-constrained output, verifies note count and ordering, and returns the interpretations with a temporary idle-battery plan. Deterministic guardrails and cost optimization are the next modules.
+All four modules of the planned pipeline are now implemented and tested:
+
+1. **API + contract** — `GET /health`, `POST /optimize-energy`, strict request validation, response schema.
+2. **LLM operator-note interpreter** — converts each operator note into one schema-constrained supported directive via OpenAI Structured Outputs.
+3. **Deterministic guardrails** — re-validate the interpreter output as untrusted data and demote any malformed directive to a safe `no_op`.
+4. **Optimizer + replay validator** — minimize grid cost with a 24-period LP, then re-derive every Section 09 invariant from the returned plan before responding.
 
 ## Architecture
 
-The target challenge pipeline is:
-
 ```text
-API input -> LLM interpreter -> guardrails/validator -> optimizer -> final API response
+API input -> LLM interpreter -> apply_guardrails -> optimize_schedule -> replay_plan -> API response
 ```
 
-Planned modules:
-
-1. **API + contract (complete)**: `GET /health`, `POST /optimize-energy`, strict request validation, response schema.
-2. **LLM interpreter (complete)**: converts each operator note into one schema-constrained supported directive using the configured language model.
-3. **Guardrails**: treats LLM output as untrusted data and validates note order, directive type, hours, numeric ranges, and `no_op` semantics.
-4. **Optimizer + replay validator**: applies directives, minimizes grid electricity cost, enforces energy balance, battery bounds/rates, grid caps, and end-of-day battery neutrality.
+`replay_plan` is the trust boundary before the response leaves the service: any violation raises `ReplayViolationError` and the request fails with HTTP 422 instead of returning a bad plan.
 
 ## Challenge Contract
 
@@ -42,23 +40,13 @@ Successful responses include:
 
 - `scenario_id`
 - `directive_interpretation`
-- `hourly_plan`
+- `hourly_plan` (24 entries with `grid_kwh`, `solar_used_kwh`, `battery_action`, `battery_energy_after_kwh`)
 - `total_grid_kwh`
 - `total_cost_bdt`
 - `peak_grid_kwh`
 - `plan_summary`
 
-Invalid requests return HTTP `422` with a stable error envelope:
-
-```json
-{
-  "error": {
-    "code": "request_validation_error",
-    "message": "The request body is invalid.",
-    "details": []
-  }
-}
-```
+Invalid requests return HTTP `422` with a stable error envelope. Guardrail violations, LP infeasibility, and replay violations each surface their own typed error code (`guardrail_violation`, `optimization_error`, `replay_violation`) so the client can distinguish structural problems from cost-engineering failures.
 
 Unexpected downstream failures return a generic HTTP `500` response without exposing prompts, credentials, or stack traces to the caller.
 
@@ -112,6 +100,39 @@ pytest tests/test_public_sample_interpreter.py -q
 
 This optional test makes real provider calls and may incur usage charges.
 
+## Docker Fallback
+
+The image is reproducible from the committed `Dockerfile` and is safe to submit as the container fallback. Build and run it locally with no secrets baked in:
+
+```bash
+docker build -t gridwise-optimizer:1.0.0 .
+docker run --rm -p 8000:8000 -e LLM_API_KEY="$LLM_API_KEY" gridwise-optimizer:1.0.0
+```
+
+Or via docker-compose, which reads `LLM_API_KEY` from the host environment and refuses to start if it is missing:
+
+```bash
+docker compose up --build
+```
+
+Once the container is up:
+
+```bash
+curl http://localhost:8000/health
+# {"status":"ok"}
+```
+
+The image:
+
+- Uses `python:3.11-slim` and a multi-stage-friendly single-stage layout.
+- Installs runtime deps only (`requirements.txt`); dev/test extras are excluded by `.dockerignore`.
+- Runs as a non-root user (`gridwise`).
+- Exposes port `8000` and serves `/health`; the container HEALTHCHECK probes `/health` every 30s.
+- Carries no API keys, model weights, or `.env` files — `LLM_API_KEY` is injected at runtime via `-e` or compose environment.
+- Starts the API with `uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers`.
+
+To push the fallback image during the judging window, retag for the registry the organizers accept (example: `ghcr.io/<org>/gridwise-optimizer:1.0.0`) and document the exact pull/run commands in your submission notes. The image should be reachable via that exact tag/digest and `/health` must return `{"status":"ok"}` without any code, prompt, or model changes.
+
 ## Environment Variables
 
 Module 2 configuration is documented in `.env.example`:
@@ -138,27 +159,24 @@ Allowed directive types:
 - `max_grid_window`
 - `no_op`
 
-## Optimizer Plan
+## LP Formulation
 
-The intended optimizer is a linear programming or dynamic programming scheduler over 24 hourly periods. Its objective is:
+`app/optimizer.py` solves a single LP per request using `scipy.optimize.linprog` with the HiGHS solver. Variables, in order: `g[0..23]` (grid import), `c[0..23]` (battery charge), `d[0..23]` (battery discharge), `s[0..23]` (solar used, slack for greedy solar allocation) — 96 variables total.
 
-```text
-minimize sum(grid_kwh[h] * tariff_bdt_per_kwh[h])
-```
+- **Objective**: `minimize Σ_h g[h] · tariff[h]` (slacks have zero cost).
+- **End-of-day neutrality**: `η_in · Σc − (1/η_out) · Σd = 0` (battery ends where it began).
+- **Per-hour energy balance**: `g[h] + s[h] + d[h] = demand[h] + c[h]`.
+- **Battery bounds**: `floor ≤ E_after[h] ≤ capacity` for every hour, where `E_after[h] = E₀ + η_in·Σ_{k≤h} c[k] − (1/η_out)·Σ_{k≤h} d[k]`.
+- **Variable bounds**: `g[h]` capped by `max_grid_window` directives; `c[h]` zeroed inside `no_charge_window`; `d[h]` zeroed inside `no_discharge_window`; `s[h] ≤ effective_solar[h]`.
 
-It must enforce:
+The current `Battery` schema does not expose charge/discharge efficiencies, so the optimizer assumes unit efficiency (`η_in = η_out = 1`). Hourly plan entries are rounded to 6 decimal places before the response is built.
 
-- hourly demand balance
-- effective solar limits after directives
-- battery capacity, reserve, and hourly charge/discharge limits
-- no-charge/no-discharge windows
-- max-grid windows
-- final battery energy equal to initial energy
-- reported totals matching the returned hourly plan
+## Replay Validator
+
+`app/replay.py` re-derives every Section 09 invariant from the LP output and refuses to ship a plan that violates any of them. The validator checks: plan length is exactly 24; every `battery_action` is one of `charge`/`discharge`/`idle`; battery transitions obey `E_after = E_before ± magnitude`; per-hour `E_after` stays within `[active_floor, capacity]`; charge and discharge rates respect `max_charge_kwh_per_hour` / `max_discharge_kwh_per_hour`; `no_charge_window` and `no_discharge_window` directives forbid the corresponding action; `solar_used_kwh ≤ effective_solar[h]`; `max_grid_window` caps `grid_kwh`; energy balance closes (`grid + solar + discharge = demand + charge`); and the battery ends the day at its initial state.
 
 ## Known Limitations
 
-- Module 3's independent deterministic guardrails are not implemented yet. Module 2 enforces its provider output schema and note mapping, but the final trust boundary still belongs in Module 3.
-- The current hourly plan uses available solar first and keeps the battery idle. It is a temporary integration baseline and does not yet apply interpreted directives or optimize cost.
-- The optional live-model public-sample evaluation was not run without a configured API key.
-- Docker packaging is not added yet.
+- **Unit battery efficiency.** The `Battery` schema does not expose `charge_efficiency` / `discharge_efficiency` fields, so the optimizer assumes both are `1.0`. The LP is structured to accept those factors if the schema grows.
+- **Live-model public-sample evaluation.** The optional integration test in `tests/test_public_sample_interpreter.py` is skipped unless `RUN_LLM_INTEGRATION_TESTS=1` and a real `LLM_API_KEY` is configured.
+- **Docker registry push** is not performed automatically — `docker build` produces `gridwise-optimizer:1.0.0` locally. Push to your preferred registry (`docker tag` + `docker push`) before the judging window so the organizers can pull the fallback image by exact tag/digest.
