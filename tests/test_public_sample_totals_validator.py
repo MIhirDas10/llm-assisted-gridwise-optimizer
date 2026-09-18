@@ -41,6 +41,14 @@ TOLERANCE_KWH = 0.01
 TOLERANCE_BDT = 0.01
 
 
+if not SAMPLE_FILE.exists():
+    pytest.skip(
+        f"Public sample cases file not present ({SAMPLE_FILE.name}); "
+        "place it in the repo root to run the offline public-sample checks.",
+        allow_module_level=True,
+    )
+
+
 def _load_cases() -> list[dict]:
     return json.loads(SAMPLE_FILE.read_text(encoding="utf-8"))["cases"]
 

@@ -12,6 +12,12 @@ from app.schemas import Battery
 RUN_LLM_TESTS = os.getenv("RUN_LLM_INTEGRATION_TESTS") == "1"
 SAMPLE_FILE = Path(__file__).parents[1] / "BUP_CSE_FEST_2026_Preli_Public_Sample_Cases.json"
 
+if not SAMPLE_FILE.exists():
+    pytest.skip(
+        f"Public sample cases file not present ({SAMPLE_FILE.name}).",
+        allow_module_level=True,
+    )
+
 
 def test_public_expected_interpretations_match_module_2_schema() -> None:
     cases = json.loads(SAMPLE_FILE.read_text(encoding="utf-8"))["cases"]
